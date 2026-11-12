@@ -1,12 +1,11 @@
 <?php
 /*
- * Yaoguai Animal Shop  -  CTF web challenge (single file)
- * Run:  php -S 0.0.0.0:8000 index.php
+ * Yaoguai Animal Shop  -  CTF web challenge (Vercel version, no PHP sessions)
  * Flag: YAO{Cr0c_f0r_th3_B1g_34rs_0f_Fiancé}
+ * State lives in an HMAC-signed cookie, so it works on serverless.
  */
-session_start();
-
-const FLAG = 'YAO{Cr0c_f0r_th3_B1g_34rs_0f_Fiancé}';
+const FLAG   = 'YAO{Cr0c_f0r_th3_B1g_34rs_0f_Fiancé}';
+const SECRET = 'change-me-yaoguai-secret'; // set any long random string
 
 $ANIMALS = [
     1 => ['name' => 'Goldfish',  'emoji' => '🐠', 'price' => 5,     'desc' => 'Three-second memory. Zero complaints.'],
@@ -18,31 +17,50 @@ $ANIMALS = [
     7 => ['name' => 'Crocodile', 'emoji' => '🐊', 'price' => 10000, 'desc' => 'The jewel of the Yaoguai menagerie. Ancient. Hungry. Expensive.'],
 ];
 
-if (!isset($_SESSION['balance'])) {
-    $_SESSION['balance'] = 100;
-    $_SESSION['owned']   = [];
+function load_state()
+{
+    $fresh = ['balance' => 100, 'owned' => []];
+    $c = $_COOKIE['st'] ?? '';
+    $p = explode('.', $c, 2);
+    if (count($p) !== 2) return $fresh;
+    if (!hash_equals(hash_hmac('sha256', $p[0], SECRET), $p[1])) return $fresh;
+    $d = json_decode(base64_decode($p[0]), true);
+    return is_array($d) && isset($d['balance'], $d['owned']) ? $d : $fresh;
 }
 
-/* ---------------------------------------------------------------
- * Donation: the money leaves the player's wallet and goes to the shop.
- * (Nobody validates the amount...)
- * ------------------------------------------------------------- */
+function save_state($s)
+{
+    $b = base64_encode(json_encode($s));
+    setcookie('st', $b . '.' . hash_hmac('sha256', $b, SECRET), ['expires' => time() + 86400, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+}
+
+function set_flash($type, $msg)
+{
+    setcookie('flash', base64_encode(json_encode([$type, $msg])), ['expires' => time() + 60, 'path' => '/']);
+}
+
+$state = load_state();
+
+/* Donation: money leaves the player's wallet and goes to the shop.
+ * (Nobody validates the amount...) */
 function Donate($money)
 {
-    $_SESSION['balance'] -= $money;
+    global $state;
+    $state['balance'] -= $money;
 }
 
 function Buy($id, $ANIMALS)
 {
+    global $state;
     if (!isset($ANIMALS[$id])) {
         return ['err', 'That animal does not exist.'];
     }
     $f = $ANIMALS[$id];
-    if ($_SESSION['balance'] < $f['price']) {
+    if ($state['balance'] < $f['price']) {
         return ['err', 'Not enough money for the ' . $f['name'] . '.'];
     }
-    $_SESSION['balance'] -= $f['price'];
-    $_SESSION['owned'][] = $id;
+    $state['balance'] -= $f['price'];
+    $state['owned'][] = $id;
     if ($id === 7) {
         return ['flag', 'The crocodile is yours.'];
     }
@@ -56,23 +74,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (is_numeric($amount)) {
             $amount = (int)$amount;
             Donate($amount);
-            $_SESSION['flash'] = ['ok', 'Thank you for donating $' . $amount . ' to the Yaoguai Animal Shop.'];
+            set_flash('ok', 'Thank you for donating $' . $amount . ' to the Yaoguai Animal Shop.');
         } else {
-            $_SESSION['flash'] = ['err', 'Enter a valid number.'];
+            set_flash('err', 'Enter a valid number.');
         }
     } elseif ($action === 'buy') {
-        $_SESSION['flash'] = Buy((int)($_POST['id'] ?? 0), $ANIMALS);
+        $r = Buy((int)($_POST['id'] ?? 0), $ANIMALS);
+        set_flash($r[0], $r[1]);
     } elseif ($action === 'reset') {
-        session_destroy();
+        $state = ['balance' => 100, 'owned' => []];
     }
-    header('Location: ' . strtok($_SERVER['REQUEST_URI'], '?'));
+    save_state($state);
+    header('Location: /');
     exit;
 }
 
-$flash = $_SESSION['flash'] ?? null;
-unset($_SESSION['flash']);
-$balance = $_SESSION['balance'] ?? 100;
-$owned   = array_count_values($_SESSION['owned'] ?? []);
+$flash = null;
+if (isset($_COOKIE['flash'])) {
+    $flash = json_decode(base64_decode($_COOKIE['flash']), true);
+    setcookie('flash', '', ['expires' => time() - 3600, 'path' => '/']);
+}
+$balance = $state['balance'];
+$owned   = array_count_values($state['owned']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
